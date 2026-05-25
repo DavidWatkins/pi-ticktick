@@ -121,6 +121,7 @@ async function mcpCall(tool: string, args: Record<string, unknown>): Promise<{ o
 			return { ok: true, content: [{ type: "text", text: `No items returned${errors}` }] };
 		}
 
+		return { ok: true, content: [{ type: "text", text: formatMcpItems(allItems, tool) }] };
 	} catch (e) {
 		return { ok: false, error: `MCP request failed: ${(e as Error).message}` };
 	}
