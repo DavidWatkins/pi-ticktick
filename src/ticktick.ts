@@ -52,7 +52,7 @@ function saveConfig(token: string): boolean {
 const MCP_URL = "https://mcp.ticktick.com/";
 let requestIdCounter = 0;
 
-async function mcpCall(tool: string, args: Record<string, unknown>): Promise<{ ok: boolean; content?: Array<{ type: string; text: string }>; error?: string }> {
+async function mcpCall(tool: string, args: Record<string, unknown>): Promise<{ ok: boolean; content?: string; error?: string }> {
 	const token = cachedConfig.token;
 	if (!token) return { ok: false, error: "Not configured" };
 
@@ -71,7 +71,12 @@ async function mcpCall(tool: string, args: Record<string, unknown>): Promise<{ o
 		if (data.error) return { ok: false, error: `MCP error ${data.error.code}: ${data.error.message}` };
 		const mc = data.result as { content?: Array<{ type?: string; text?: string }>; isError?: boolean };
 		if (mc?.isError) return { ok: false, error: mc.content?.[0]?.text ?? "Unknown error" };
-		const content = (mc?.content ?? []).filter((c): c is { type: string; text: string } => c.type === "text" && c.text);
+		// Parse MCP JSON and format as human-readable text to avoid context bloat
+		const raw = (mc?.content?.[0]?.text ?? "").trim();
+		if (!raw) return { ok: true, content: "(no result)" };
+		let parsed: unknown;
+		try { parsed = JSON.parse(raw); } catch { return { ok: true, content: raw }; }
+		return { ok: true, content: formatMcpResult(parsed, tool) };
 		return { ok: true, content };
 	} catch (e) {
 		return { ok: false, error: `MCP request failed: ${(e as Error).message}` };
@@ -83,6 +88,153 @@ async function mcpCall(tool: string, args: Record<string, unknown>): Promise<{ o
 function formatDate(d: Date): string { return d.toISOString().split("T")[0]; }
 function today(): string { return formatDate(new Date()); }
 function paramsHas(obj: Record<string, unknown>, key: string): boolean { return obj[key] !== undefined && obj[key] !== null; }
+
+/** Format MCP raw JSON responses as compact human-readable text to avoid context bloat. */
+function formatMcpResult(result: unknown, toolName?: string): string {
+	if (!result || typeof result !== "object") return JSON.stringify(result);
+
+	const obj = result as Record<string, unknown>;
+
+	// Unwrap MCP wrapper objects like {tasks: [...], projects: [...]}
+	if (Array.isArray(obj.tasks)) return formatTaskList(obj.tasks as Record<string, unknown>[], toolName);
+	if (Array.isArray(obj.projects)) return formatProjectList(obj.projects as Record<string, unknown>[], toolName);
+	if (Array.isArray(obj.habits)) return formatHabitList(obj.habits as Record<string, unknown>[], toolName);
+	if (Array.isArray(obj.focus)) return `Focus sessions: ${obj.focus.length} items`;
+
+	// Single task/object → format key fields compactly
+	if (!Array.isArray(obj) && obj.title && obj.id) {
+		return formatSingleTask(obj);
+	}
+	if (!Array.isArray(obj) && obj.habitId && obj.title) {
+		return formatSingleHabit(obj);
+	}
+	if (!Array.isArray(obj) && obj.habitId) {
+		return formatSingleHabit(obj);
+	}
+	if (!Array.isArray(obj) && obj.projectId && obj.projectName) {
+		return formatSingleProject(obj);
+	}
+
+	// Array of tasks
+	if (Array.isArray(obj) && obj.length > 0) {
+		const first = obj[0];
+		if (typeof first === "object" && first && "id" in first && "title" in first) {
+			if (obj.length === 1) return formatSingleTask(first as Record<string, unknown>);
+			return formatTaskList(obj as Record<string, unknown>[], toolName);
+		}
+		if (typeof first === "object" && first && "habitId" in first) {
+			return formatHabitList(obj as Record<string, unknown>[]);
+		}
+		if (typeof first === "object" && first && "projectId" in first) {
+			return formatProjectList(obj as Record<string, unknown>[]);
+		}
+	}
+
+	// Generic object → format as key-value pairs, top-level only
+	const lines: string[] = [];
+	for (const [k, v] of Object.entries(obj)) {
+		if (typeof v === "string") lines.push(`${k}: ${v}`);
+		else if (typeof v === "number") lines.push(`${k}: ${v}`);
+		else if (typeof v === "boolean") lines.push(`${k}: ${v}`);
+		else if (Array.isArray(v)) {
+			lines.push(`${k}: [${v.length} items]`);
+		} else if (v && typeof v === "object") {
+			const nested = v as Record<string, unknown>;
+			// Flatten known nested structures
+			if ("startDate" in nested && "endDate" in nested) lines.push(`date range: ${nested.startDate} → ${nested.endDate}`);
+			else lines.push(`${k}: [object]`);
+		}
+	}
+	return lines.join("\n");
+}
+
+function formatSingleTask(t: Record<string, unknown>): string {
+	const title = (t.title as string) ?? "(untitled)";
+	const fields: string[] = [title];
+	if (t.projectName || t.project_id || t.project) fields.push(`Project: ${(t.projectName || t.project_id || t.project)}`);
+	if (t.due_date || t.dueDate) fields.push(`Due: ${t.due_date || t.dueDate}`);
+	if (t.start_date || t.startDate) fields.push(`Start: ${t.start_date || t.startDate}`);
+	if (t.priority) fields.push(`Priority: ${t.priority}`);
+	if (t.status !== undefined && t.status !== 0 && t.status !== null) fields.push(`Status: ${t.status}`);
+	if (t.tags && Array.isArray(t.tags) && t.tags.length) fields.push(`Tags: ${t.tags.join(", ")}`);
+	return fields.join("\n");
+}
+
+function formatTaskList(tasks: Record<string, unknown>[], _toolName?: string): string {
+	const active = tasks.filter((t) => !t.status || t.status === 0 || t.status === undefined);
+	const completed = tasks.filter((t) => t.status === 2 || t.status === 1);
+
+	const lines: string[] = [];
+	lines.push(`${tasks.length} task(s) total (${active.length} active, ${completed.length} completed)`);
+	lines.push("");
+
+	if (active.length) {
+		lines.push("Active:");
+		for (const t of active.slice(0, 20)) {
+			const title = (t.title as string) ?? "(untitled)";
+			const due = (t.due_date || t.dueDate || "").toString();
+			const prio = t.priority ? ` [P${t.priority}]` : "";
+			const project = (t.projectName || t.project || t.project_id || "").toString();
+			const extra = [due, project].filter(Boolean).join(" | ");
+			const extraStr = extra ? `  (${extra})` : "";
+			lines.push(`  ○ ${title}${prio}${extraStr}`);
+		}
+		if (active.length > 20) lines.push(`  ... ${active.length - 20} more`);
+	}
+
+	if (completed.length) {
+		lines.push("");
+		lines.push("Completed:");
+		for (const t of completed.slice(-5)) {
+			const title = (t.title as string) ?? "(untitled)";
+			lines.push(`  ✓ ${title}`);
+		}
+	}
+
+	return lines.join("\n");
+}
+
+function formatSingleHabit(h: Record<string, unknown>): string {
+	const title = (h.title as string) ?? h.name ?? "(untitled)";
+	const lines: string[] = [title];
+	if (h.cycle_type || h.cycleType) lines.push(`Cycle: ${h.cycle_type || h.cycleType}`);
+	if (h.frequency) lines.push(`Frequency: ${h.frequency}`);
+	if (h.description) lines.push(`Description: ${h.description}`);
+	if (h.is_enabled !== undefined) lines.push(`Enabled: ${h.is_enabled}`);
+	return lines.join("\n");
+}
+
+function formatHabitList(habits: Record<string, unknown>[]): string {
+	const lines: string[] = [`${habits.length} habit(s):`];
+	for (const h of habits.slice(0, 20)) {
+		const title = (h.title || h.name) ?? "(untitled)";
+		const cycle = (h.cycle_type || h.cycleType) ?? "";
+		const lines2: string[] = [`  ○ ${title}`];
+		if (cycle) lines2.push(`  Cycle: ${cycle}`);
+		lines.push(lines2.join("\n"));
+	}
+	if (habits.length > 20) lines.push(`  ... ${habits.length - 20} more`);
+	return lines.join("\n");
+}
+
+function formatSingleProject(p: Record<string, unknown>): string {
+	const name = (p.projectName || p.name) ?? "(unnamed)";
+	const lines: string[] = [name];
+	if (p.shared) lines.push(`Shared: ${p.shared}`);
+	if (p.description) lines.push(`Description: ${p.description}`);
+	return lines.join("\n");
+}
+
+function formatProjectList(projects: Record<string, unknown>[]): string {
+	const lines: string[] = [`${projects.length} project(s):`];
+	for (const p of projects.slice(0, 20)) {
+		const name = (p.projectName || p.name) ?? "(unnamed)";
+		const shared = p.shared ? " (shared)" : "";
+		lines.push(`  ${name}${shared}`);
+	}
+	if (projects.length > 20) lines.push(`  ... ${projects.length - 20} more`);
+	return lines.join("\n");
+}
 
 // ────────────────────── Tools ──────────────────────
 
