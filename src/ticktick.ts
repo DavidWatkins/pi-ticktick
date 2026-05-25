@@ -53,7 +53,9 @@ const MCP_URL = "https://mcp.ticktick.com/";
 let requestIdCounter = 0;
 
 async function mcpCall(tool: string, args: Record<string, unknown>): Promise<{ ok: boolean; content?: string; error?: string }> {
-	const token = cachedConfig.token;
+	const config = loadConfig();
+	if (!config.ok) return { ok: false, error: config.error! };
+	const token = config.token;
 	if (!token) return { ok: false, error: "Not configured" };
 
 	const body = { jsonrpc: "2.0", method: "tools/call", params: { name: tool, arguments: args }, id: ++requestIdCounter };
