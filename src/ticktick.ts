@@ -71,12 +71,55 @@ async function mcpCall(tool: string, args: Record<string, unknown>): Promise<{ o
 		if (data.error) return { ok: false, error: `MCP error ${data.error.code}: ${data.error.message}` };
 		const mc = data.result as { content?: Array<{ type?: string; text?: string }>; isError?: boolean };
 		if (mc?.isError) return { ok: false, error: mc.content?.[0]?.text ?? "Unknown error" };
-		// Parse MCP JSON and format as human-readable text to avoid context bloat
-		const raw = (mc?.content?.[0]?.text ?? "").trim();
-		if (!raw) return { ok: true, content: "(no result)" };
-		let parsed: unknown;
-		try { parsed = JSON.parse(raw); } catch { return { ok: true, content: raw }; }
-		return { ok: true, content: formatMcpResult(parsed, tool) };
+
+		// Collect all text blocks from MCP response and parse each one
+		const rawBlocks = (mc?.content ?? [])
+			.filter((c): c is { type: string; text: string } => c.type === "text" && c.text)
+			.map((c) => c.text.trim())
+			.filter(Boolean);
+		if (rawBlocks.length === 0) return { ok: true, content: "(no result)" };
+
+		// Parse each block as JSON; collect objects and errors
+		const allItems: Record<string, unknown>[] = [];
+		const parseErrors: string[] = [];
+		for (const raw of rawBlocks) {
+			try {
+				const parsed = JSON.parse(raw);
+				// Some MCP responses wrap items in {tasks: [...]} or similar
+				if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+					const keys = Object.keys(parsed);
+					for (const key of keys) {
+						const val = (parsed as Record<string, unknown>)[key];
+						if (Array.isArray(val)) {
+							for (const item of val) {
+								if (item && typeof item === "object") allItems.push(item as Record<string, unknown>);
+							}
+						} else if ((parsed as Record<string, unknown>).title && (parsed as Record<string, unknown>).id) {
+							allItems.push(parsed);
+							break;
+						} else {
+							allItems.push(parsed as Record<string, unknown>);
+							break;
+						}
+					}
+				} else if (Array.isArray(parsed)) {
+					for (const item of parsed) {
+						if (item && typeof item === "object") allItems.push(item as Record<string, unknown>);
+					}
+				} else if (parsed && typeof parsed === "object") {
+					allItems.push(parsed as Record<string, unknown>);
+				}
+			} catch {
+				parseErrors.push(raw.slice(0, 200));
+			}
+		}
+
+		if (allItems.length === 0) {
+			const errors = parseErrors.length ? ` (parse errors: ${parseErrors.length})` : "";
+			return { ok: true, content: `No items returned${errors}` };
+		}
+
+		return { ok: true, content: formatMcpItems(allItems, tool) };
 		return { ok: true, content };
 	} catch (e) {
 		return { ok: false, error: `MCP request failed: ${(e as Error).message}` };
@@ -88,6 +131,37 @@ async function mcpCall(tool: string, args: Record<string, unknown>): Promise<{ o
 function formatDate(d: Date): string { return d.toISOString().split("T")[0]; }
 function today(): string { return formatDate(new Date()); }
 function paramsHas(obj: Record<string, unknown>, key: string): boolean { return obj[key] !== undefined && obj[key] !== null; }
+
+/** Format MCP items (parsed from all content blocks) as compact human-readable text. */
+function formatMcpItems(items: Record<string, unknown>[], toolName?: string): string {
+	// Classify items by type
+	const tasks: Record<string, unknown>[] = [];
+	const projects: Record<string, unknown>[] = [];
+	const habits: Record<string, unknown>[] = [];
+	const other: Record<string, unknown>[] = [];
+
+	for (const item of items) {
+		if (item.id && item.title) tasks.push(item);
+		else if (item.projectId || item.project || item.groupId) projects.push(item);
+		else if (item.habitId) habits.push(item);
+		else other.push(item);
+	}
+
+	const lines: string[] = [];
+
+	if (tasks.length) lines.push(formatTaskList(tasks, toolName));
+	if (projects.length) lines.push(formatProjectList(projects));
+	if (habits.length) lines.push(formatHabitList(habits));
+	if (other.length) {
+		for (const o of other.slice(0, 10)) {
+			const text = JSON.stringify(o);
+			lines.push(text.length > 200 ? text.slice(0, 200) + "..." : text);
+		}
+		if (other.length > 10) lines.push(`... ${other.length - 10} more items`);
+	}
+
+	return lines.join("\n\n");
+}
 
 /** Format MCP raw JSON responses as compact human-readable text to avoid context bloat. */
 function formatMcpResult(result: unknown, toolName?: string): string {
