@@ -15,7 +15,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
-import { matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 
@@ -490,11 +490,11 @@ export default function ticktickExtension(pi: ExtensionAPI): void {
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) { ctx.ui.notify("/ticktick requires interactive mode", "error"); return; }
 			const cfg = loadConfig();
-			const msg = cfg.ok ? `TickTick: connected\nToken: ${cfg.token!.slice(0, 8)}...\nRun /ticktick-setup to change token.` : `TickTick: not configured\n${cfg.error}\nRun /ticktick-setup to set up.`;
-			await ctx.ui.custom<void>((_tui, theme, _kb, done) => ({
-				render: () => ["", theme.fg("accent", " TickTick Status "), "", ...msg.split("\n").map((l: string) => theme.fg("text", l)), "", theme.fg("dim", "Press Escape to close"), ""],
-				invalidate: () => {}, handleInput: (d: string) => { if (matchesKey(d, "escape") || matchesKey(d, "ctrl+c")) done(); }
-			}));
+			if (!cfg.ok) {
+				ctx.ui.notify(cfg.error ?? "TickTick not configured", "warning");
+			} else {
+				ctx.ui.notify(`TickTick connected\nToken: ${cfg.token!.slice(0, 8)}...\nRun /ticktick-setup to change.`, "info");
+			}
 		},
 	});
 
@@ -503,15 +503,16 @@ export default function ticktickExtension(pi: ExtensionAPI): void {
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) { ctx.ui.notify("/ticktick-setup requires interactive mode", "error"); return; }
 			const existing = loadConfig();
-			await ctx.ui.input({ prompt: ctx.ui.theme.fg("accent", "TickTick API Token"), placeholder: "Paste your token here" }, async (value) => {
-				if (!value || value.trim() === "") { ctx.ui.notify("Token cannot be empty", "warning"); return; }
-				const token = value.trim();
-				if (saveConfig(token)) {
-					cachedConfig.token = token;
-					const test = await mcpCall("list_projects", {});
-					ctx.ui.notify(test.ok ? "TickTick connected!" : `Token saved but failed: ${test.error}`, test.ok ? "success" : "warning");
-				} else ctx.ui.notify("Failed to save config", "error");
-			});
+			const placeholder = existing.ok ? "Paste your new token here" : "Paste your TickTick API token here";
+			const prompt = ctx.ui.theme.fg("accent", "TickTick API Token");
+			const value = await ctx.ui.input(prompt, placeholder);
+			if (!value || value.trim() === "") { ctx.ui.notify("Token cannot be empty", "warning"); return; }
+			const token = value.trim();
+			if (saveConfig(token)) {
+				cachedConfig.token = token;
+				const test = await mcpCall("list_projects", {});
+				ctx.ui.notify(test.ok ? "TickTick connected!" : `Token saved but failed: ${test.error}`, test.ok ? "success" : "warning");
+			} else ctx.ui.notify("Failed to save config", "error");
 		},
 	});
 }
