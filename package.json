@@ -1,0 +1,13 @@
+{
+  "name": "pi-ticktick",
+  "version": "1.0.0",
+  "description": "pi extension: connect TickTick task manager via REST API",
+  "main": "dist/ticktick.mjs",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "esbuild": "^0.25.0"
+  }
+}
