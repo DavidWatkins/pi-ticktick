@@ -329,7 +329,8 @@ export default function ticktickExtension(pi: ExtensionAPI): void {
 			limit: Type.Optional(Type.Number({ description: "Max results" })),
 		}),
 		async execute(_tcid, params, _sig, _onUpdate) {
-			if (!cachedConfig.token) return { content: [{ type: "text", text: "Error: not configured. Run /ticktick-setup." }], details: {} };
+			const config = loadConfig();
+			if (!config.ok) return { content: [{ type: "text", text: `Error: ${config.error}` }], details: {} };
 
 			switch (params.action) {
 				case "list": {
