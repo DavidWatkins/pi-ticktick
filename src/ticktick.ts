@@ -52,7 +52,7 @@ function saveConfig(token: string): boolean {
 const MCP_URL = "https://mcp.ticktick.com/";
 let requestIdCounter = 0;
 
-async function mcpCall(tool: string, args: Record<string, unknown>): Promise<{ ok: boolean; content?: string; error?: string }> {
+async function mcpCall(tool: string, args: Record<string, unknown>): Promise<{ ok: boolean; content?: Array<{ type: string; text: string }>; error?: string }> {
 	const config = loadConfig();
 	if (!config.ok) return { ok: false, error: config.error! };
 	const token = config.token;
@@ -79,7 +79,7 @@ async function mcpCall(tool: string, args: Record<string, unknown>): Promise<{ o
 			.filter((c): c is { type: string; text: string } => c.type === "text" && c.text)
 			.map((c) => c.text.trim())
 			.filter(Boolean);
-		if (rawBlocks.length === 0) return { ok: true, content: "(no result)" };
+		if (rawBlocks.length === 0) return { ok: true, content: [{ type: "text", text: "(no result)" }] };
 
 		// Parse each block as JSON; collect objects and errors
 		const allItems: Record<string, unknown>[] = [];
@@ -118,11 +118,9 @@ async function mcpCall(tool: string, args: Record<string, unknown>): Promise<{ o
 
 		if (allItems.length === 0) {
 			const errors = parseErrors.length ? ` (parse errors: ${parseErrors.length})` : "";
-			return { ok: true, content: `No items returned${errors}` };
+			return { ok: true, content: [{ type: "text", text: `No items returned${errors}` }] };
 		}
 
-		return { ok: true, content: formatMcpItems(allItems, tool) };
-		return { ok: true, content };
 	} catch (e) {
 		return { ok: false, error: `MCP request failed: ${(e as Error).message}` };
 	}
